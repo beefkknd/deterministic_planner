@@ -1,0 +1,142 @@
+Bug Report: Deterministic Planner Code Review
+Generated: 2026-02-17 (Updated: 2026-02-17 — second pass)
+==============================================================================
+
+PREVIOUSLY REPORTED — NOW FIXED
+--------------------------------
+
+#1  FIXED — Custom worker_results_reducer implemented (state.py:15-24)
+#2  FIXED — F07 now returns raw ES response dict (f07_es_query_exec.py:72)
+#3  FIXED — __init__.py no longer imports workers directly
+#6  FIXED — F12 no longer checks sql_results (f12_analyze_results.py:75-83)
+#7  FIXED — hydrate_inputs removed from state.py
+#8  FIXED — asyncio removed from f03_worker_executor.py
+#9  FIXED — MainState removed from f03_worker_executor.py
+#10 FIXED — HumanMessage, AIMessage removed from f01_reiterate_intention.py
+#11 FIXED — dataclass, field removed from state.py
+#12 FIXED — Unused enums removed from state.py
+#13 FIXED — F14 uses PASSTHROUGH_KEYS set (f14_synthesizer.py:19-20)
+#14 FIXED — BaseWorker docstring is now correct
+
+
+PREVIOUSLY REPORTED — STILL OPEN
+---------------------------------
+
+#4  F07 renamed to es_query_exec but README said sql_exec
+    Status: PARTIALLY FIXED — Node table and worker registry updated.
+    Mermaid diagram and some scenario text updated.
+
+#5  F02 creates a new structured chain every round
+    File: f02_deterministic_planner.py:290-294
+    Status: OPEN — Accepted as low priority. System prompt is dynamic
+    (round/registry), so caching is non-trivial.
+
+
+==============================================================================
+NEW FINDINGS (Second Pass — Logic, Async, Data Handshake)
+==============================================================================
+
+
+CRITICAL
+--------
+
+#15 F02 is blind to pending sub-goals → duplicate dispatch risk
+    Files: f02_deterministic_planner.py:296-302, graph.py:96-110
+
+    F02's prompt only shows completed and failed sub-goals:
+      - _format_completed_context: success only
+      - _format_failed_context: failed only
+      - NO context for pending sub-goals
+
+    Problem scenario:
+    1. Round 1: F02 creates sg1 (no deps) and sg2 (depends on sg1)
+    2. route_after_planner: sg1 ready → dispatched, sg2 blocked → skipped
+    3. F13 processes sg1, stores outputs, loops back to F02
+    4. Round 2: F02 sees sg1 done but does NOT see sg2 still pending
+    5. F02 creates sg3 — same work as sg2 (duplicate)
+    6. route_after_planner: BOTH sg2 (now unblocked) AND sg3 dispatched
+       → double execution, wasted tokens, potential inconsistency
+
+    Suggestion: Add _format_pending_context(state) to F02's template:
+
+        Pending sub-goals (still waiting for inputs):
+        {pending_context}
+
+    And add to system prompt: "Do NOT create sub-goals that duplicate
+    pending ones. If a pending sub-goal's dependencies are now met,
+    it will be dispatched automatically."
+
+
+HIGH
+----
+
+#16 No validation of LLM-generated InputRef targets in F02
+    File: f02_deterministic_planner.py:206-229
+
+    _convert_planned_sub_goals trusts the LLM's from_sub_goal IDs and
+    slot names without validation. If the LLM hallucinates:
+    - A non-existent sub-goal ID → sub-goal stuck pending forever
+    - A non-existent slot name → same result
+    - An ID referencing a future sub-goal that hasn't executed → blocked
+
+    Suggestion: After conversion, validate all InputRefs against
+    completed_outputs and existing sub-goal IDs. Log warnings for
+    invalid refs and either fix them or fail the sub-goal early.
+
+#17 "running" status defined but never used
+    Files: state.py:55, graph.py, f13_join_reduce.py
+
+    SubGoal.status type includes "running" as a valid literal:
+        status: Literal["pending", "running", "success", "failed"]
+
+    But no code ever sets a sub-goal to "running". The actual flow is:
+        pending → success/failed (set by F13)
+
+    This means the state diagram in README shows a "running" state
+    that doesn't exist in practice.
+
+    Action: Either:
+    - Use it: set status="running" in route_after_planner when dispatching
+    - Remove it: change type to Literal["pending", "success", "failed"]
+
+
+MEDIUM
+------
+
+#18 Workers' resolved_inputs never contains "question" — misleading fallback
+    Files: f04_common_helpdesk.py:124, f05_metadata_lookup.py:154,
+           f06_es_query_gen.py:103, f09_clarify_question.py:83,
+           f10_explain_metadata.py:81, f12_analyze_results.py:108
+
+    Multiple workers do:
+        question = resolved.get("question") or sub_goal.get("description", "")
+
+    But "question" is a MainState field, not a sub-goal output slot.
+    No sub-goal ever produces a "question" output. So resolved.get("question")
+    always returns None. Workers always use the description fallback.
+
+    This isn't broken but is misleading code. The first branch can
+    never trigger via the InputRef mechanism.
+
+    Action: Either remove the dead resolved.get("question") path, or
+    have F02 explicitly inject the user's question into sub-goal params.
+
+
+LOW
+---
+
+#19 README scenarios used string IDs ("sb1"), code uses integers (1, 2, 3)
+    Status: FIXED in README update — scenarios now use "sg1" notation
+    with integer IDs in InputRef examples.
+
+#20 README implementation sketch mutates state directly
+    File: README.md (LangGraph Implementation Sketch section)
+
+    The sketch shows:
+        state["sub_goals"].extend(planner_response["sub_goals"])
+        state["status"] = "executing"
+
+    Actual code correctly uses immutable pattern:
+        return {**state, "sub_goals": state["sub_goals"] + new_sub_goals}
+
+    Should note the sketch is pseudocode, or update to match actual pattern.
