@@ -1,20 +1,18 @@
 """
 LLM Service Foundation
 
-Simple LLM service with chain creation.
-Matches pattern: PROMPT_TEMPLATE | llm | parser
+Simple LLM service - just provides the LLM instance.
+Chain creation is done in each node.
 """
 
-from typing import Optional, Any
+from typing import Optional
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.agent.config import settings
 
 
 class LLMService:
-    """Simple LLM service with singleton pattern."""
+    """Simple LLM service - just holds the LLM instance."""
 
     _instance: Optional["LLMService"] = None
 
@@ -52,55 +50,7 @@ class LLMService:
         """Reset singleton (for testing)."""
         cls._instance = None
 
-    def create_chain(
-        self,
-        system_message: str,
-        prompt_template: Optional[str] = None,
-    ) -> ChatPromptTemplate:
-        """
-        Create a chain: prompt | llm | str_parser.
 
-        Usage:
-            chain = llm_service.create_chain(system_message, "{question}")
-            result = chain.ainvoke({"question": "..."})
-        """
-        if prompt_template:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_message),
-                ("human", prompt_template)
-            ])
-        else:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_message),
-                MessagesPlaceholder(variable_name="messages", optional=True)
-            ])
-
-        return prompt | self.llm | StrOutputParser()
-
-    def create_structured_chain(
-        self,
-        system_message: str,
-        prompt_template: str,
-        output_schema: type,
-    ) -> Any:
-        """
-        Create a chain with structured output (Pydantic).
-
-        Usage:
-            chain = llm_service.create_structured_chain(system, template, MyModel)
-            result = chain.ainvoke({"var": "..."})
-            # result is MyModel instance
-        """
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_message),
-            ("human", prompt_template)
-        ])
-
-        structured_llm = self.llm.with_structured_output(output_schema)
-        return prompt | structured_llm
-
-
-# Convenience function
-def get_llm_service() -> LLMService:
-    """Get LLM service instance."""
-    return LLMService.get_instance()
+def get_llm() -> BaseChatModel:
+    """Get the LLM instance."""
+    return LLMService.get_instance().llm

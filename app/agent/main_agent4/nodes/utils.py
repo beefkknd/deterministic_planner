@@ -6,6 +6,9 @@ import json
 from typing import Any, Literal, TypeVar, Type
 
 from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
+
+from app.agent.foundations.llm_service import get_llm
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -122,14 +125,13 @@ async def extract_entities_with_llm(question: str) -> ESQueryGenerationState:
     Returns:
         ESQueryGenerationState with extracted entities and intent
     """
-    from app.agent.foundations.llm_service import LLMService
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", ENTITY_EXTRACTION_PROMPT),
+        ("human", ENTITY_EXTRACTION_TEMPLATE)
+    ])
 
-    llm_service = LLMService.get_instance()
-    chain = llm_service.create_structured_chain(
-        system_message=ENTITY_EXTRACTION_PROMPT,
-        prompt_template=ENTITY_EXTRACTION_TEMPLATE,
-        output_schema=ESQueryGenerationState,
-    )
+    llm = get_llm()
+    chain = prompt | llm.with_structured_output(ESQueryGenerationState)
 
     result: ESQueryGenerationState = await chain.ainvoke({"question": question})
     return result
@@ -210,14 +212,13 @@ async def generate_es_query_with_llm(
     Returns:
         ESQueryResult with generated query and ambiguity info
     """
-    from app.agent.foundations.llm_service import LLMService
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", QUERY_GEN_PROMPT),
+        ("human", QUERY_GEN_TEMPLATE)
+    ])
 
-    llm_service = LLMService.get_instance()
-    chain = llm_service.create_structured_chain(
-        system_message=QUERY_GEN_PROMPT,
-        prompt_template=QUERY_GEN_TEMPLATE,
-        output_schema=ESQueryResult,
-    )
+    llm = get_llm()
+    chain = prompt | llm.with_structured_output(ESQueryResult)
 
     result: ESQueryResult = await chain.ainvoke({
         "intent_type": intent_type,

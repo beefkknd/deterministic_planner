@@ -9,10 +9,11 @@ Uses Pydantic structured output for reliable LLM response parsing.
 
 from typing import Optional
 from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
 
 from app.agent.main_agent4.logging_config import get_logger
 from app.agent.main_agent4.state import MainState, TurnSummary
-from app.agent.foundations.llm_service import LLMService
+from app.agent.foundations.llm_service import get_llm
 
 logger = get_logger("f01_reiterate")
 
@@ -75,6 +76,11 @@ Current user message:
 
 Restate the user's intent as a clear, actionable goal."""
 
+PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+    ("system", REITERATE_SYSTEM_PROMPT),
+    ("human", REITERATE_TEMPLATE)
+])
+
 
 # =============================================================================
 # Helpers
@@ -127,12 +133,8 @@ class ReiterateIntention:
     """
 
     def __init__(self):
-        self._llm_service = LLMService.get_instance()
-        self._chain = self._llm_service.create_structured_chain(
-            system_message=REITERATE_SYSTEM_PROMPT,
-            prompt_template=REITERATE_TEMPLATE,
-            output_schema=ReiterateResult,
-        )
+        llm = get_llm()
+        self._chain = PROMPT_TEMPLATE | llm.with_structured_output(ReiterateResult)
 
     async def ainvoke(self, state: MainState) -> MainState:
         """

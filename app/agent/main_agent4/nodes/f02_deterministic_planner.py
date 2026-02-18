@@ -11,6 +11,7 @@ Uses Pydantic structured output for reliable LLM response parsing.
 import json
 from typing import Any, Literal
 from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
 
 from app.agent.main_agent4.state import (
     MainState, SubGoal, InputRef,
@@ -18,7 +19,7 @@ from app.agent.main_agent4.state import (
 )
 from app.agent.main_agent4.worker_registry import WORKER_REGISTRY
 from app.agent.main_agent4.logging_config import get_logger
-from app.agent.foundations.llm_service import LLMService
+from app.agent.foundations.llm_service import get_llm
 
 logger = get_logger("f02_planner")
 
@@ -361,7 +362,7 @@ class DeterministicPlanner:
     """
 
     def __init__(self):
-        self._llm_service = LLMService.get_instance()
+        pass  # Chain created per-call (system prompt varies by round)
 
     async def ainvoke(self, state: MainState) -> MainState:
         """
@@ -409,11 +410,13 @@ class DeterministicPlanner:
                 max_rounds=max_rounds,
             )
 
-            chain = self._llm_service.create_structured_chain(
-                system_message=system_prompt,
-                prompt_template=PLANNER_TEMPLATE,
-                output_schema=PlannerDecision,
-            )
+            # Create chain per-call (system prompt varies)
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", PLANNER_TEMPLATE)
+            ])
+            llm = get_llm()
+            chain = prompt | llm.with_structured_output(PlannerDecision)
 
             decision: PlannerDecision = await chain.ainvoke({
                 "question": question,

@@ -6,10 +6,12 @@ Deep LLM analysis of query results — comparisons, trends, insights.
 
 import json
 from typing import Any
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.agent.main_agent4.nodes import BaseWorker
 from app.agent.main_agent4.state import WorkerInput, WorkerResult, create_worker_result
 from app.agent.main_agent4.worker_registry import worker_tool
-from app.agent.foundations.llm_service import LLMService
+from app.agent.foundations.llm_service import get_llm
 
 
 # =============================================================================
@@ -39,6 +41,11 @@ Query results:
 
 Provide a detailed analysis of these results."""
 
+PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+    ("system", ANALYSIS_PROMPT),
+    ("human", ANALYSIS_TEMPLATE)
+])
+
 
 # =============================================================================
 # Worker Class
@@ -54,11 +61,7 @@ class AnalyzeResults(BaseWorker):
 
     def __init__(self):
         super().__init__("analyze_results")
-        self._llm_service = LLMService.get_instance()
-        self._chain = self._llm_service.create_chain(
-            system_message=ANALYSIS_PROMPT,
-            prompt_template=ANALYSIS_TEMPLATE,
-        )
+        self._chain = PROMPT_TEMPLATE | get_llm()
 
     def _prepare_results_text(self, resolved: dict[str, Any]) -> str:
         """

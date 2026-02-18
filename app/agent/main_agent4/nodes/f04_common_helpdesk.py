@@ -5,10 +5,12 @@ Answers FAQ and general assistance questions.
 """
 
 from typing import Optional
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.agent.main_agent4.nodes import BaseWorker
 from app.agent.main_agent4.state import WorkerInput, WorkerResult, create_worker_result
 from app.agent.main_agent4.worker_registry import worker_tool
-from app.agent.foundations.llm_service import LLMService
+from app.agent.foundations.llm_service import get_llm
 
 
 # =============================================================================
@@ -25,6 +27,11 @@ Guidelines:
 - If you don't know something, say so
 - Focus on factual information about shipping concepts
 """
+
+PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_PROMPT),
+    ("human", "{question}")
+])
 
 
 # =============================================================================
@@ -69,50 +76,18 @@ class CommonHelpdesk(BaseWorker):
 
     def __init__(self):
         super().__init__("common_helpdesk")
-        self._llm_service = LLMService.get_instance()
-        self._chain = self._llm_service.create_chain(
-            system_message=SYSTEM_PROMPT,
-            prompt_template="{question}"
-        )
-
-    def _is_faq_query(self, question: str) -> tuple[bool, Optional[str]]:
-        """
-        Check if the question matches a known FAQ topic.
-
-        Args:
-            question: User question
-
-        Returns:
-            Tuple of (is_faq, matched_topic)
-        """
-        question_lower = question.lower()
-
-        for topic, answer in FAQ_ANSWERS.items():
-            if topic in question_lower:
-                return True, topic
-
-        # Check for common help patterns
-        help_patterns = [
-            "what is", "how does", "explain", "what's",
-            "can you help", "what do you have", "what data"
-        ]
-
-        for pattern in help_patterns:
-            if pattern in question_lower:
-                return True, None
-
-        return False, None
+        self._chain = PROMPT_TEMPLATE | get_llm()
 
     @worker_tool(
         preconditions=["user query is a common/general question"],
         outputs=["answer"],
         goal_type="deliverable",
         name="common_helpdesk",
-        description="Answers FAQ and general assistance questions"
+        description="Answers FAQ and general assistance questions",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
-        Execute the helpdesk worker.
+        Answer a general shipping question.
 
         Args:
             worker_input: WorkerInput with sub_goal and resolved_inputs
@@ -127,38 +102,42 @@ class CommonHelpdesk(BaseWorker):
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="failed",
-                error="No question provided"
+                error="No question provided",
             )
 
         try:
-            # Check for FAQ match first
-            is_faq, matched_topic = self._is_faq_query(question)
+            # Try FAQ first
+            question_lower = question.lower()
+            for key, answer in FAQ_ANSWERS.items():
+                if key in question_lower:
+                    return create_worker_result(
+                        sub_goal_id=sub_goal["id"],
+                        status="success",
+                        outputs={"answer": answer},
+                        message=f"Found FAQ match for '{key}'",
+                    )
 
-            if is_faq and matched_topic and matched_topic in FAQ_ANSWERS:
-                # Use predefined answer
-                answer = FAQ_ANSWERS[matched_topic]
-            else:
-                # Use LLM to generate answer
-                answer = await self._chain.ainvoke({"question": question})
+            # Fall back to LLM
+            response: str = await self._chain.ainvoke({"question": question})
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="success",
-                outputs={"answer": answer},
-                message="Successfully answered FAQ question"
+                outputs={"answer": response},
+                message="Generated answer via LLM",
             )
 
         except Exception as e:
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="failed",
-                error=f"Failed to generate answer: {str(e)}"
+                error=f"Failed to generate answer: {str(e)}",
             )
 
 
 # =============================================================================
-# Instantiate for export
+# Singleton
 # =============================================================================
 
-# Create singleton instance for the graph to wire
-f04_common_helpdesk = CommonHelpdesk()
+common_helpdesk = CommonHelpdesk()
+f04_common_helpdesk = common_helpdesk  # Alias for import compatibility

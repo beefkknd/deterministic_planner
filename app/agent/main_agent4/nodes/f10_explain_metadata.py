@@ -5,10 +5,12 @@ Explains mapping fields and data structure to the user.
 """
 
 import json
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.agent.main_agent4.nodes import BaseWorker
 from app.agent.main_agent4.state import WorkerInput, WorkerResult, create_worker_result
 from app.agent.main_agent4.worker_registry import worker_tool
-from app.agent.foundations.llm_service import LLMService
+from app.agent.foundations.llm_service import get_llm
 
 
 # =============================================================================
@@ -37,6 +39,11 @@ Available field metadata:
 
 Explain these fields and data structure to the user."""
 
+PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+    ("system", EXPLAIN_PROMPT),
+    ("human", EXPLAIN_TEMPLATE)
+])
+
 
 # =============================================================================
 # Worker Class
@@ -52,11 +59,7 @@ class ExplainMetadata(BaseWorker):
 
     def __init__(self):
         super().__init__("explain_metadata")
-        self._llm_service = LLMService.get_instance()
-        self._chain = self._llm_service.create_chain(
-            system_message=EXPLAIN_PROMPT,
-            prompt_template=EXPLAIN_TEMPLATE,
-        )
+        self._chain = PROMPT_TEMPLATE | get_llm()
 
     @worker_tool(
         preconditions=["has metadata_results to explain"],

@@ -4,10 +4,12 @@ F09: Clarify Question Node
 Generates a markdown clarification message when the planner detects ambiguity.
 """
 
+from langchain_core.prompts import ChatPromptTemplate
+
 from app.agent.main_agent4.nodes import BaseWorker
 from app.agent.main_agent4.state import WorkerInput, WorkerResult, create_worker_result
 from app.agent.main_agent4.worker_registry import worker_tool
-from app.agent.foundations.llm_service import LLMService
+from app.agent.foundations.llm_service import get_llm
 
 
 # =============================================================================
@@ -38,6 +40,11 @@ Ambiguity details:
 
 Generate a clarification message in markdown."""
 
+PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
+    ("system", CLARIFY_PROMPT),
+    ("human", CLARIFY_TEMPLATE)
+])
+
 
 # =============================================================================
 # Worker Class
@@ -53,11 +60,7 @@ class ClarifyQuestion(BaseWorker):
 
     def __init__(self):
         super().__init__("clarify_question")
-        self._llm_service = LLMService.get_instance()
-        self._chain = self._llm_service.create_chain(
-            system_message=CLARIFY_PROMPT,
-            prompt_template=CLARIFY_TEMPLATE,
-        )
+        self._chain = PROMPT_TEMPLATE | get_llm()
 
     @worker_tool(
         preconditions=["planner identified ambiguity requiring clarification"],
