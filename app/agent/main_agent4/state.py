@@ -143,6 +143,24 @@ class MainState(TypedDict):
 # TurnSummary (External - maintained by main app)
 # =============================================================================
 
+class KeyArtifact(TypedDict):
+    """
+    A memorable output from a worker, stored in TurnSummary for cross-turn access.
+
+    F01 reads these to resolve pagination continuations, prior query references,
+    and other cross-turn context. F13 writes them based on worker memorable_slots.
+
+    Slot contents vary by type:
+      "es_query":       {es_query, hit_count, has_more, next_offset, page_size}
+      "analysis_result": {analysis_result, entity_mappings}
+    """
+    type: str           # "es_query" | "analysis_result"
+    sub_goal_id: int
+    turn_id: int
+    intent: str         # human-readable description for F01 matching, e.g. "shipments from China"
+    slots: dict         # actual data; keys depend on type (see above)
+
+
 class TurnSummary(TypedDict):
     """
     External memory - maintained by main app, not agent state.
@@ -153,7 +171,7 @@ class TurnSummary(TypedDict):
     turn_id: int
     human_message: str
     ai_response: str
-    key_artifacts: Optional[str]
+    key_artifacts: Optional[list[KeyArtifact]]
 
 
 # =============================================================================
