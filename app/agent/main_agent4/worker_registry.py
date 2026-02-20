@@ -26,21 +26,31 @@ def worker_tool(
     outputs: list[str],
     goal_type: Literal["support", "deliverable"],
     name: str,
-    description: str
+    description: str,
+    memorable_slots: Optional[list[str]] = None,
+    synthesis_mode: Literal["narrative", "display", "hidden"] = "hidden",
 ) -> Callable:
     """
     Decorator to register a worker function with metadata.
 
     This decorator:
-    1. Attaches metadata (name, description, preconditions, outputs, goal_type)
+    1. Attaches metadata (name, description, preconditions, outputs, goal_type,
+       memorable_slots, synthesis_mode)
     2. Registers the function to the global WORKER_REGISTRY
 
     Args:
-        preconditions: List of precondition strings
-        outputs: List of output slot names
-        goal_type: "support" or "deliverable"
+        preconditions: List of precondition strings for F02 to evaluate
+        outputs: List of output slot names this worker produces
+        goal_type: "support" (intermediate data) or "deliverable" (user-facing content)
         name: Unique worker name
         description: Human-readable description
+        memorable_slots: Subset of outputs to store in key_artifacts across turns.
+            Defaults to [] (nothing memorable). F13 uses this.
+        synthesis_mode: How F14 includes this worker's output in the final response.
+            "narrative" = include in LLM synthesis prompt (prose outputs).
+            "display"   = append verbatim after LLM prose (tables, lists).
+            "hidden"    = exclude from final response (support workers).
+            Defaults to "hidden".
 
     Returns:
         Decorator function
@@ -51,7 +61,9 @@ def worker_tool(
             outputs=["answer"],
             goal_type="deliverable",
             name="common_helpdesk",
-            description="Answers FAQ and general assistance questions"
+            description="Answers FAQ and general assistance questions",
+            memorable_slots=[],
+            synthesis_mode="narrative",
         )
         async def common_helpdesk(worker_input: WorkerInput) -> WorkerResult:
             ...
@@ -63,7 +75,9 @@ def worker_tool(
             "description": description,
             "preconditions": preconditions,
             "outputs": outputs,
-            "goal_type": goal_type
+            "goal_type": goal_type,
+            "memorable_slots": memorable_slots or [],
+            "synthesis_mode": synthesis_mode,
         }
 
         # Register to global registry (dedup by name)

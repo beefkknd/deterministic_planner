@@ -85,12 +85,16 @@ class WorkerCapability(TypedDict):
     Registry Entry - declares a worker's capabilities.
 
     F02 uses this registry to check preconditions before dispatching.
+    F13 uses memorable_slots to decide what to write to key_artifacts.
+    F14 uses synthesis_mode to decide narrative (LLM) vs display (verbatim) rendering.
     """
     name: str
     description: str
     preconditions: list[str]      # human-readable strings for F02 to evaluate
     outputs: list[str]            # output slot names this worker produces
     goal_type: Literal["support", "deliverable"]
+    memorable_slots: list[str]    # subset of outputs worth storing in key_artifacts across turns; [] = nothing memorable
+    synthesis_mode: Literal["narrative", "display", "hidden"]  # how F14 includes this worker's output in the final response
 
 
 class AnalysisResult(TypedDict):
@@ -128,7 +132,7 @@ class MainState(TypedDict):
     question: str                                    # restated goal from F01
     conversation_history: Optional[list["TurnSummary"]]  # prior turns for context
     sub_goals: list[SubGoal]                          # accumulated across all rounds
-    completed_outputs: dict[int, dict[str, Any]]       # sub_goal_id -> {slot: value}
+    completed_outputs: dict[int, dict[str, Any]]       # sub_goal_id -> {slot: value}; id=0 is reserved for F01's pre-loaded context (user query, prior artifacts, pagination state)
     round: int                                         # current round number (1-indexed)
     max_rounds: int                                    # safety cap
     status: Literal["planning", "executing", "done", "failed"]
@@ -158,7 +162,7 @@ class KeyArtifact(TypedDict):
     sub_goal_id: int
     turn_id: int
     intent: str         # human-readable description for F01 matching, e.g. "shipments from China"
-    slots: dict         # actual data; keys depend on type (see above)
+    slots: dict[str, Any]  # actual data; keys depend on type (see above)
 
 
 class TurnSummary(TypedDict):

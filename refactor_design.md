@@ -1,5 +1,22 @@
 # Refactor Design: Query Management, Context Normalization, and Synthesis
 
+## Background — What This Document Is
+
+This document captures design decisions for a targeted refactor of the deterministic planner agent (main_agent4). The agent answers maritime shipping questions by decomposing them into sub-goals, executing workers (F04–F12) in parallel rounds, and synthesizing a final response.
+
+**What prompted the refactor:**
+A user question can reference ES queries from three different places — queries the agent generated internally, queries the user pasted into the message, and queries from prior conversation turns. Without a clear pipeline for normalizing these three origins, F02 (the planner) would need to understand query provenance, making it fragile and hard to test. The refactor also addresses cross-turn memory (key_artifacts), pagination state management across turns, and over-stuffing F14's synthesis prompt with large result tables.
+
+**How to read this document:**
+- **Domains 1–5** describe each problem area and its solution
+- **Node-by-Node Todo List** translates those solutions into concrete implementation tasks per node
+- **Design Clarifications** and **Resolved Design Decisions** capture Q&A from design review
+
+**Key architecture constraint to keep in mind:**
+The agent runs as a LangGraph graph. State flows between nodes. Each turn starts fresh — the only cross-turn memory is `conversation_history: list[TurnSummary]`, which the **main app** assembles and passes in. F01 is always the first node to run. F02 never sees raw user messages — only the normalized state F01 produces.
+
+---
+
 ## Design Goals
 
 1. **Shield F02** from query origin complexity — F02 plans against clean normalized state only
@@ -53,8 +70,13 @@ Anything that requires understanding *what the user is referring to* belongs in 
 F01 must detect and handle three categories of contextual references:
 
 **Category A — User-Provided Query**
-- Signals: raw JSON in the message body, code blocks containing ES query syntax
-- Action: extract and write to `completed_outputs[0]["user_es_query"]`
+- **LLM does both detection and extraction** — Python regex is not used. The LLM identifies the intent and extracts the query text as a field in `ReiterateResult`
+- `ReiterateResult` includes:
+  - `user_query_intent: "submitted" | "asking_about" | "none"`
+  - `user_query_text: Optional[str]` — the raw query text as the user wrote it (possibly broken JSON)
+- When `user_query_intent == "submitted"`: Python stores `user_query_text` verbatim in `completed_outputs[0]["user_es_query"]`. **F07 is the validator** — if the query is malformed, F07 returns `WorkerResult(status="failed", error="...")` and F02 can report back to the user ("your query appears to have a syntax error: ...")
+- When `user_query_intent == "asking_about"`: the query text goes into `completed_outputs[0]["query_to_explain"]` (routes to F10 or a future explain-query worker). The user wants an explanation, not execution.
+- This approach correctly handles broken queries — they are captured and run, producing a meaningful error rather than silently dropped by a failed regex parse
 
 **Category B — Reference to Prior Agent Query**
 - Signals: "your query", "your last query", "why did that query", "the query you ran"
@@ -66,10 +88,19 @@ F01 must detect and handle three categories of contextual references:
 
 ### Multi-Intent Disambiguation
 
-When multiple prior queries exist in `key_artifacts` and the user says "show more" without specifying which, F01 must resolve the ambiguity:
-- If only one query has `has_more: true` → use it unambiguously
-- If multiple queries have `has_more: true` → write a disambiguation signal to state; F02 dispatches F09 to ask the user which they meant
-- If the referenced query has `has_more: false` → write a "no_more_results" signal; F02 can plan a clarification
+F01 checks the **most recent turn's** key_artifacts (per design decision: latest has higher priority).
+
+- If only one artifact in that turn has `has_more: true` → resolve directly, write to `completed_outputs[0]`
+- If multiple artifacts in the **same most-recent turn** have `has_more: true` → ambiguous; F01 writes:
+  ```
+  completed_outputs[0]["pagination_candidates"] = [
+      {"intent": "Maersk shipments to LA", "next_offset": 10, "es_query": {...}},
+      {"intent": "Evergreen shipments to LA", "next_offset": 10, "es_query": {...}},
+  ]
+  ```
+  F02 (LLM) sees `pagination_candidates` with multiple entries and dispatches F09 (clarify_question). No special F02 code — F09's precondition "planner identified ambiguity" covers this naturally.
+- If the most recent matching artifact has `has_more: false` → write `completed_outputs[0]["pagination_exhausted"] = true`; F02 plans a clarification.
+- If user ignores disambiguation in next turn and asks something unrelated, F01 simply doesn't detect pagination continuation and the signal is never written.
 
 ### Explicit Size (Same-Turn, No F01 Intervention)
 
@@ -95,6 +126,29 @@ F02 still receives the same clean normalized state. The split is internal to the
 ---
 
 ## Domain 3: key_artifacts — Structured Cross-Turn Memory
+
+### Where key_artifacts Lives — Critical Context
+
+`key_artifacts` is a field on `TurnSummary`, which is **external to the agent**. "External" does NOT mean inaccessible — it means the **main app owns persistence**, not the agent. Here is the exact data flow:
+
+```
+Turn N (current):
+  F13 writes key_artifacts → appended to TurnSummary for this turn
+  Agent returns final_response
+  Main app saves TurnSummary{..., key_artifacts: [...]} to its store
+
+Between turns (main app):
+  Main app loads last N TurnSummaries (window)
+  Main app calls: create_initial_state(question, conversation_history=[ts1, ts2, ...tsN])
+
+Turn N+1 (next):
+  MainState.conversation_history = [ts1, ts2, ..., tsN]  ← key_artifacts rides in here
+  F01 runs first: reads state["conversation_history"][-1]["key_artifacts"]
+  F01 populates completed_outputs[0] from prior artifacts
+  F02 plans against completed_outputs[0] — never sees raw history
+```
+
+F01 does not call a database or external API. It reads `state["conversation_history"]`, which the main app already loaded. The window size (how many turns back) is a main app concern — F01 and F13 do not prune.
 
 ### Principle
 
@@ -232,6 +286,8 @@ Add `synthesis_mode` to SubGoal (and worker registry default):
 
 ### F14 Two-Phase Synthesis
 
+**synthesis_mode resolution**: F14 looks up each sub-goal's `synthesis_mode` from the worker registry via `get_capability_by_name(sub_goal["worker"])["synthesis_mode"]`. No schema change to `synthesis_inputs` or `InputRef` — the mode is a registry property, not a wiring property.
+
 **Phase 1 — LLM Synthesis (narrative deliverables only):**
 Collect all `narrative` sub-goal outputs. Pass them to LLM with synthesis prompt. LLM weaves into a coherent story: "A shipment is [FAQ answer]. Based on your query, [analysis]..."
 
@@ -246,7 +302,7 @@ Append all `display` sub-goal outputs verbatim after the prose. No LLM involved.
 
 ### F01 — Reiterate Intention
 
-- [ ] **Detect user-provided ES query**: scan HumanMessage for raw JSON / code blocks that look like ES queries; extract into `completed_outputs[0]["user_es_query"]`
+- [ ] **Detect user-provided ES query**: extend `ReiterateResult` with `user_query_intent: "submitted" | "asking_about" | "none"` and `user_query_text: Optional[str]`; LLM extracts query text even if malformed; Python writes it to `completed_outputs[0]["user_es_query"]` (submitted) or `completed_outputs[0]["query_to_explain"]` (asking_about); F07 handles validation at execution time
 - [ ] **Detect prior-query references**: recognize phrases ("your query", "your last query", "the query you ran"); match against `key_artifacts` by type and recency; write to `completed_outputs[0]["prior_agent_query"]`
 - [ ] **Detect pagination continuation**: recognize phrases ("show more", "next page", "load more", "next N", "keep going"); look up matching `key_artifacts` entry
     - If `has_more: true`: write `{es_query, next_offset, has_more, page_size}` to `completed_outputs[0]`
@@ -356,6 +412,20 @@ Append all `display` sub-goal outputs verbatim after the prose. No LLM involved.
 - [ ] **TurnSummary.key_artifacts**: define as `list[KeyArtifact]` with schema above; currently may be unstructured
 - [ ] **MainState**: document that `completed_outputs[0]` is reserved for F01's synthetic context sub-goal
 - [ ] **WorkerCapability**: add `memorable_slots` and `synthesis_mode` fields to the dataclass
+
+---
+
+## Design Clarifications
+
+**F01 detection handles broken queries** — The LLM does both detection and extraction (no Python regex). The LLM captures the query text even if it is malformed JSON. F07 is the validator — a broken query produces `WorkerResult(status="failed")` and F02 surfaces the error to the user. Nothing is silently dropped.
+
+**key_artifacts is not a mystery access** — F01 reads it from `state["conversation_history"]`, the same list of `TurnSummary` objects F01 already uses for chat history today. The main app passes this in via `create_initial_state(conversation_history=[...])`. See the data flow diagram in Domain 3 for the full picture.
+
+**F02 shielding is precise** — F02 has no hardcoded pagination branches. Its slot awareness comes from the worker registry (F08's precondition declares "requires `next_offset`"). F02 is an LLM evaluating registry preconditions declaratively, not an if/else pagination router.
+
+**F13 bundling uses SubGoal.params** — `params` is already `dict[str, Any]`. F02 writes `params["bundles_with_sub_goal"] = <F06_id>` when creating the F07 sub-goal. F13 reads it from there. No schema change needed.
+
+**TurnSummary.key_artifacts** — `KeyArtifact` TypedDict defined in `state.py`. `TurnSummary.key_artifacts` updated to `Optional[list[KeyArtifact]]`. Done.
 
 ---
 
