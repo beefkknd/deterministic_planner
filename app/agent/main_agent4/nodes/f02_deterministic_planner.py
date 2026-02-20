@@ -95,29 +95,54 @@ completed_outputs or the user query itself.
 sub-goal, wire it via inputs with from_sub_goal (the completed goal's ID) \
 and slot (the output slot name). This is how data flows between rounds.
 
-3. ROUND BUDGET: You are on round {round} of {max_rounds}. Plan efficiently.
+3. F01 CONTEXT (sub_goal id=0): The first entry in completed_outputs (id=0) \
+contains context from F01 (the intent normalizer). Available slots:
+   - user_es_query: raw ES query text if user pasted or referenced a query
+   - prior_es_query: ES query dict from prior pagination
+   - prior_next_offset: next offset for pagination
+   - prior_page_size: page size for pagination
 
-4. AMBIGUITY: If a worker reports ambiguity, decide:
+   To wire from F01 context, use from_sub_goal: 0 and the slot name. \
+Example: for page_query worker needing continuation, wire:
+   {{"es_query": {{"from_sub_goal": 0, "slot": "prior_es_query"}}, \
+"offset": {{"from_sub_goal": 0, "slot": "prior_next_offset"}}, \
+"limit": {{"from_sub_goal": 0, "slot": "prior_page_size"}}}}
+
+4. ROUND BUDGET: You are on round {round} of {max_rounds}. Plan efficiently.
+
+5. AMBIGUITY: If a worker reports ambiguity, decide:
    - Low confidence (< 0.6): dispatch clarify_question
    - High confidence (>= 0.6): proceed with best guess
 
-5. PARTIAL SUCCESS: If some deliverables succeeded and others failed after \
+6. PARTIAL SUCCESS: If some deliverables succeeded and others failed after \
 retries, you may declare "done" with partial results.
 
-6. FIRST ROUND: For the first round, analyze the user goal and choose the \
+7. FIRST ROUND: For the first round, analyze the user goal and choose the \
 right starting workers. FAQ questions → common_helpdesk. Data queries → \
 metadata_lookup first.
 
-7. WIRING BETWEEN ROUNDS: When creating sub-goals that depend on outputs \
+8. WIRING BETWEEN ROUNDS: When creating sub-goals that depend on outputs \
 from previous rounds, always set inputs with the correct from_sub_goal ID \
 and slot name matching the completed sub-goal's output.
 
-8. PENDING SUB-GOALS: Sub-goals listed as "pending" were already created \
+9. PAGINATION: When "has_prior_es_query" appears in context, dispatch \
+page_query worker (not es_query_exec). Wire es_query, offset, limit \
+from completed_outputs[0]["prior_es_query"], ["prior_next_offset"], \
+["prior_page_size"]. When no prior context, dispatch es_query_exec for fresh query.
+
+10. PENDING SUB-GOALS: Sub-goals listed as "pending" were already created \
 in a previous round but are waiting for their input dependencies to be \
 satisfied. Do NOT create new sub-goals that duplicate pending ones. \
 They will be dispatched automatically once their dependencies are met. \
 Only create new sub-goals for work that is NOT already covered by \
 pending sub-goals.
+
+11. EXPLICIT SIZE: When user specifies a result count (e.g., "50 results"), \
+put size: N in the sub-goal's params, not in the query itself.
+
+12. QUERY BUNDLING: When creating an es_query_exec sub-goal that depends on \
+es_query_gen, set params["bundles_with_sub_goal"] = <es_query_gen_sub_goal_id> \
+so F13 knows to merge their key_artifacts into one entry.
 """
 
 PLANNER_TEMPLATE = """\
@@ -153,15 +178,63 @@ def _format_worker_registry() -> str:
     return "\n".join(lines)
 
 
+def _format_f01_context(state: MainState) -> str:
+    """
+    Format F01 context summary (completed_outputs[0]) as presence flags.
+
+    This is a short summary injected into the prompt, not raw slot data.
+    Only mentions slots that exist; returns empty string if slot-0 is empty.
+
+    NOTE: Only injects context in round 1, as F01 context is only relevant
+    for the initial planning decision.
+
+    Args:
+        state: Current MainState
+
+    Returns:
+        String like "Context from F01: has_prior_es_query, has_user_es_query"
+        or empty string if no F01 context or not round 1.
+    """
+    # Only inject F01 context in round 1
+    current_round = state.get("round", 1)
+    if current_round > 1:
+        return ""
+
+    completed_outputs = state.get("completed_outputs", {})
+    f01_context = completed_outputs.get(0, {})
+
+    if not f01_context:
+        return ""
+
+    flags = []
+    if "prior_es_query" in f01_context:
+        flags.append("has_prior_es_query")
+    if "user_es_query" in f01_context:
+        flags.append("has_user_es_query")
+
+    if flags:
+        return f"Context from F01: {', '.join(flags)}"
+    return ""
+
+
 def _format_completed_context(state: MainState) -> str:
     """Format completed sub-goals with their outputs for the planner."""
+    lines = []
+
+    # Add F01 context summary first (if present)
+    f01_context = _format_f01_context(state)
+    if f01_context:
+        lines.append(f01_context)
+
     completed = [
         sg for sg in state["sub_goals"] if sg["status"] == "success"
     ]
     if not completed:
+        if lines:
+            return "\n".join(lines)
         return "(none yet)"
 
-    lines = []
+    lines.append("Completed sub-goals:")
     for sg in completed:
         outputs = state["completed_outputs"].get(sg["id"], {})
         truncated = {}
@@ -256,10 +329,11 @@ def _convert_planned_sub_goals(
     Returns:
         List of SubGoal dicts ready for state
     """
-    # Build set of valid IDs: existing sub-goals + new ones being created
+    # Build set of valid IDs: existing sub-goals + new ones + completed outputs (includes id=0)
     existing_ids = {sg["id"] for sg in existing_sub_goals}
     new_ids = {id_start + i for i in range(len(planned))}
-    valid_ids = existing_ids | new_ids
+    completed_ids = set(completed_outputs.keys())  # Includes F01's id=0
+    valid_ids = existing_ids | new_ids | completed_ids
 
     # Build map of existing outputs for slot validation
     # For completed sub-goals, use actual runtime outputs; for others, use declared
@@ -271,6 +345,10 @@ def _convert_planned_sub_goals(
         )
         for sg in existing_sub_goals
     }
+    # Add completed outputs (including id=0) for slot validation
+    for cid in completed_outputs:
+        if cid not in existing_outputs:
+            existing_outputs[cid] = set(completed_outputs[cid].keys())
 
     registry_outputs = {
         w["name"]: w["outputs"] for w in WORKER_REGISTRY

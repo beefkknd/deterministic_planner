@@ -101,7 +101,9 @@ class ShowResults(BaseWorker):
         outputs=["formatted_results"],
         goal_type="deliverable",
         name="show_results",
-        description="Template-based rendering of ES query results (no LLM)"
+        description="Template-based rendering of ES query results (no LLM)",
+        memorable_slots=[],
+        synthesis_mode="display",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """

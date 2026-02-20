@@ -6,6 +6,7 @@ Tests helper functions that don't require LLM.
 import pytest
 from app.agent.main_agent4.nodes.f01_reiterate_intention import (
     _convert_history_to_messages,
+    _find_prior_agent_query,
     ReiterateResult,
 )
 
@@ -40,19 +41,21 @@ class TestConvertHistoryToMessages:
         assert "AI: Here are Maersk shipments" in result
 
     def test_key_artifacts_appended(self):
-        """Key artifacts are appended to AI response."""
+        """Key artifacts intents are rendered in Prior queries format."""
         history = [
             {
                 "turn_id": 1,
                 "human_message": "what is total?",
                 "ai_response": "Total is 100",
-                "key_artifacts": "shipments: 100",
+                "key_artifacts": [
+                    {"type": "es_query", "intent": "shipments from China"}
+                ],
             }
         ]
 
         result = _convert_history_to_messages(history)
 
-        assert "Key artifacts: shipments: 100" in result
+        assert "[Prior queries: shipments from China]" in result
 
     def test_limited_to_last_5_turns(self):
         """Only last 5 turns are included."""
@@ -106,3 +109,139 @@ class TestReiterateResult:
 
         assert result.main_goal == "Find Maersk"
         assert result.reasoning == "User asked for Maersk"
+
+    def test_user_query_text_optional(self):
+        """user_query_text is optional and defaults to None."""
+        result = ReiterateResult(
+            main_goal="Find shipments",
+            reasoning="User wants to find",
+        )
+
+        assert result.user_query_text is None
+
+    def test_references_prior_results_default_false(self):
+        """references_prior_results defaults to False."""
+        result = ReiterateResult(
+            main_goal="Find shipments",
+            reasoning="User wants to find",
+        )
+
+        assert result.references_prior_results is False
+
+    def test_can_set_user_query_text(self):
+        """Can set user_query_text field."""
+        result = ReiterateResult(
+            main_goal="Run this query",
+            reasoning="User pasted a query",
+            user_query_text='{"query": {"match_all": {}}}',
+        )
+
+        assert result.user_query_text == '{"query": {"match_all": {}}}'
+
+    def test_can_set_references_prior_results(self):
+        """Can set references_prior_results field."""
+        result = ReiterateResult(
+            main_goal="Show more",
+            reasoning="User wants pagination",
+            references_prior_results=True,
+        )
+
+        assert result.references_prior_results is True
+
+
+class TestFindPriorAgentQuery:
+    """Tests for _find_prior_agent_query helper."""
+
+    def test_empty_history_returns_none(self):
+        """Empty history returns None."""
+        result = _find_prior_agent_query(None)
+        assert result is None
+
+    def test_empty_list_returns_none(self):
+        """Empty list returns None."""
+        result = _find_prior_agent_query([])
+        assert result is None
+
+    def test_no_artifacts_returns_none(self):
+        """History with no key_artifacts returns None."""
+        history = [
+            {"turn_id": 1, "human_message": "q", "ai_response": "a", "key_artifacts": None}
+        ]
+        result = _find_prior_agent_query(history)
+        assert result is None
+
+    def test_finds_es_query_artifact(self):
+        """Finds es_query type artifact and returns its slots."""
+        history = [
+            {
+                "turn_id": 1,
+                "human_message": "q",
+                "ai_response": "a",
+                "key_artifacts": [
+                    {"type": "es_query", "slots": {"es_query": {"match_all": {}}, "next_offset": 20, "page_size": 10}}
+                ],
+            }
+        ]
+        result = _find_prior_agent_query(history)
+        assert result == {"es_query": {"match_all": {}}, "next_offset": 20, "page_size": 10}
+
+    def test_ignores_non_es_query_artifacts(self):
+        """Ignores artifacts that are not es_query type."""
+        history = [
+            {
+                "turn_id": 1,
+                "human_message": "q",
+                "ai_response": "a",
+                "key_artifacts": [
+                    {"type": "analysis_result", "slots": {"result": "data"}}
+                ],
+            }
+        ]
+        result = _find_prior_agent_query(history)
+        assert result is None
+
+    def test_returns_most_recent_first(self):
+        """Returns the most recent es_query artifact (scans reversed)."""
+        history = [
+            {
+                "turn_id": 1,
+                "human_message": "q1",
+                "ai_response": "a1",
+                "key_artifacts": [
+                    {"type": "es_query", "slots": {"es_query": "old"}}
+                ],
+            },
+            {
+                "turn_id": 2,
+                "human_message": "q2",
+                "ai_response": "a2",
+                "key_artifacts": [
+                    {"type": "es_query", "slots": {"es_query": "new"}}
+                ],
+            },
+        ]
+        result = _find_prior_agent_query(history)
+        assert result == {"es_query": "new"}
+
+    def test_skips_turns_without_matching_artifacts(self):
+        """Skips turns until finding a matching es_query artifact."""
+        history = [
+            {
+                "turn_id": 1,
+                "human_message": "q1",
+                "ai_response": "a1",
+                "key_artifacts": [
+                    {"type": "analysis_result", "slots": {"result": "data"}}
+                ],
+            },
+            {
+                "turn_id": 2,
+                "human_message": "q2",
+                "ai_response": "a2",
+                "key_artifacts": [
+                    {"type": "es_query", "slots": {"es_query": "found"}}
+                ],
+            },
+        ]
+        result = _find_prior_agent_query(history)
+        assert result == {"es_query": "found"}

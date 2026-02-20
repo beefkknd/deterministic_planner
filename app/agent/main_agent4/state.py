@@ -141,6 +141,7 @@ class MainState(TypedDict):
     planner_reasoning: str                             # F02's reasoning for current action
     synthesis_inputs: Optional[dict[str, InputRef]]    # wired refs for F14 when done
     worker_results: Annotated[list[WorkerResult], worker_results_reducer]  # accumulated by Send() branches
+    key_artifacts: Optional[list["KeyArtifact"]]        # memorable outputs from workers, written by F13 for main app to persist
 
 
 # =============================================================================
@@ -212,6 +213,7 @@ def create_initial_state(
         "planner_reasoning": "",
         "synthesis_inputs": None,
         "worker_results": [],
+        "key_artifacts": None,
     }
 
 

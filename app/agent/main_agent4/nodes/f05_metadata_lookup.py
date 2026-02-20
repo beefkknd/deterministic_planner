@@ -92,6 +92,8 @@ class MetadataLookup(BaseWorker):
         goal_type="support",
         name="metadata_lookup",
         description="Resolves entity names via LLM, then looks up field metadata and reference values from ES mappings",
+        memorable_slots=["analysis_result"],
+        synthesis_mode="hidden",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """

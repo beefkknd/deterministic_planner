@@ -84,6 +84,8 @@ class CommonHelpdesk(BaseWorker):
         goal_type="deliverable",
         name="common_helpdesk",
         description="Answers FAQ and general assistance questions",
+        memorable_slots=[],
+        synthesis_mode="narrative",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -118,12 +120,14 @@ class CommonHelpdesk(BaseWorker):
                     )
 
             # Fall back to LLM
-            response: str = await self._chain.ainvoke({"question": question})
+            response = await self._chain.ainvoke({"question": question})
+            # Extract string content from AIMessage
+            response_content = response.content if hasattr(response, 'content') else str(response)
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="success",
-                outputs={"answer": response},
+                outputs={"answer": response_content},
                 message="Generated answer via LLM",
             )
 

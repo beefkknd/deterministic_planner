@@ -94,6 +94,8 @@ class AnalyzeResults(BaseWorker):
         goal_type="deliverable",
         name="analyze_results",
         description="Deep LLM analysis of query results — comparisons, trends, insights",
+        memorable_slots=[],
+        synthesis_mode="narrative",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -124,11 +126,13 @@ class AnalyzeResults(BaseWorker):
                 "question": question,
                 "results": results_text,
             })
+            # Extract string content from AIMessage
+            analysis_content = analysis.content if hasattr(analysis, 'content') else str(analysis)
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="success",
-                outputs={"analysis": analysis},
+                outputs={"analysis": analysis_content},
                 message="Generated analysis of query results",
             )
 

@@ -12,6 +12,13 @@ from app.agent.foundations.es_query_service import get_shipment_service
 
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+DEFAULT_PAGE_SIZE = 20
+
+
+# =============================================================================
 # Worker Class
 # =============================================================================
 
@@ -29,10 +36,12 @@ class ESQueryExec(BaseWorker):
 
     @worker_tool(
         preconditions=["has ES query"],
-        outputs=["es_results", "hit_count"],
+        outputs=["es_results", "hit_count", "next_offset", "page_size"],
         goal_type="support",
         name="es_query_exec",
-        description="Executes Elasticsearch queries"
+        description="Executes Elasticsearch queries",
+        memorable_slots=["next_offset", "page_size"],
+        synthesis_mode="hidden",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -57,13 +66,25 @@ class ESQueryExec(BaseWorker):
             )
 
         try:
+            # Inject default pagination at execution time
+            # F07 is first-page execution: always start from 0
+            page_size = DEFAULT_PAGE_SIZE
+
+            # Clone query to avoid mutating the original
+            query_with_pagination = {**es_query} if es_query else {}
+            query_with_pagination["from"] = 0
+            query_with_pagination["size"] = page_size
+
             result = await self._es_service.search(
                 index="shipments",
-                query=es_query
+                query=query_with_pagination
             )
 
             # Return raw ES response so downstream workers can parse it
             hit_count = result.get("hits", {}).get("total", {}).get("value", 0)
+
+            # next_offset is where the next page would start
+            next_offset = 0 + page_size
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
@@ -71,6 +92,8 @@ class ESQueryExec(BaseWorker):
                 outputs={
                     "es_results": result,  # Raw ES response dict
                     "hit_count": hit_count,
+                    "next_offset": next_offset,
+                    "page_size": page_size,
                 },
                 message=f"ES query returned {hit_count} hits"
             )

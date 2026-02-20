@@ -68,6 +68,8 @@ class ClarifyQuestion(BaseWorker):
         goal_type="deliverable",
         name="clarify_question",
         description="Generates a markdown clarification message when planner detects ambiguity",
+        memorable_slots=[],
+        synthesis_mode="narrative",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -98,11 +100,13 @@ class ClarifyQuestion(BaseWorker):
                 "message": message,
                 "alternatives": ", ".join(alternatives) if alternatives else "none specified",
             })
+            # Extract string content from AIMessage
+            clarification_content = clarification.content if hasattr(clarification, 'content') else str(clarification)
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="success",
-                outputs={"clarification_message": clarification},
+                outputs={"clarification_message": clarification_content},
                 message=f"Generated clarification for ambiguous field: {field}",
             )
 

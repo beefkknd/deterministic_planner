@@ -34,10 +34,12 @@ class ESQueryGen(BaseWorker):
             "has metadata_results from metadata_lookup",
             "has analysis_result with intent_type",
         ],
-        outputs=["es_query", "ambiguity"],
+        outputs=["es_query", "intent", "ambiguity"],
         goal_type="support",
         name="es_query_gen",
         description="Generates search or aggregation ES query based on analysis_result.intent_type; reports field ambiguity if uncertain",
+        memorable_slots=["es_query"],
+        synthesis_mode="hidden",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -79,7 +81,20 @@ class ESQueryGen(BaseWorker):
             es_query = query_result.query or {}
             ambiguity = query_result.ambiguity
 
-            outputs: dict[str, Any] = {"es_query": es_query}
+            # Build intent description for key_artifacts storage
+            intent_parts = []
+            if entity_mappings:
+                for orig, canon in entity_mappings.items():
+                    intent_parts.append(f"{canon}")
+            if intent_type == "aggregation":
+                intent_description = f"aggregation: {', '.join(intent_parts) or question}"
+            else:
+                intent_description = f"{', '.join(intent_parts) or question}"
+
+            outputs: dict[str, Any] = {
+                "es_query": es_query,
+                "intent": intent_description,
+            }
             if ambiguity:
                 outputs["ambiguity"] = ambiguity
 

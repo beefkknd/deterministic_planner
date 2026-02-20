@@ -36,11 +36,13 @@ class PageQuery(BaseWorker):
         self._es_service = get_shipment_service()
 
     @worker_tool(
-        preconditions=["has es_query with pagination params"],
-        outputs=["page_results", "has_more", "next_offset"],
+        preconditions=["prior_es_query is available in context (user referenced prior results or requested next page)"],
+        outputs=["page_results", "next_offset", "page_size", "es_query"],
         goal_type="support",
         name="page_query",
-        description="Handles paginated ES queries with offset/limit"
+        description="Handles paginated ES queries with offset/limit",
+        memorable_slots=["es_query", "next_offset", "page_size"],
+        synthesis_mode="hidden",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -50,7 +52,7 @@ class PageQuery(BaseWorker):
             worker_input: WorkerInput with sub_goal and resolved_inputs
 
         Returns:
-            WorkerResult with page_results, has_more, next_offset
+            WorkerResult with page_results, next_offset, page_size, es_query
         """
         sub_goal = worker_input["sub_goal"]
         resolved = worker_input.get("resolved_inputs", {})
@@ -58,8 +60,9 @@ class PageQuery(BaseWorker):
 
         es_query = resolved.get("es_query") or params.get("es_query")
         index = params.get("index", "shipments")
-        offset = int(params.get("offset", 0))
-        limit = min(int(params.get("limit", DEFAULT_PAGE_SIZE)), MAX_PAGE_SIZE)
+        # Read pagination values from resolved_inputs (via InputRef) or params fallback
+        offset = int(resolved.get("offset", params.get("offset", 0)))
+        limit = min(int(resolved.get("limit", params.get("limit", DEFAULT_PAGE_SIZE))), MAX_PAGE_SIZE)
 
         if not es_query:
             return create_worker_result(
@@ -80,15 +83,15 @@ class PageQuery(BaseWorker):
             total = hits.get("total", {}).get("value", 0)
             page_results = hits.get("hits", [])
             next_offset = offset + limit
-            has_more = next_offset < total
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="success",
                 outputs={
                     "page_results": page_results,
-                    "has_more": has_more,
-                    "next_offset": next_offset if has_more else None,
+                    "next_offset": next_offset,
+                    "page_size": limit,
+                    "es_query": es_query,  # Echo back for artifact preservation
                 },
                 message=f"Page returned {len(page_results)} of {total} total hits"
             )

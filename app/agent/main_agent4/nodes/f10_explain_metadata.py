@@ -67,6 +67,8 @@ class ExplainMetadata(BaseWorker):
         goal_type="deliverable",
         name="explain_metadata",
         description="Explains mapping fields and data structure to the user",
+        memorable_slots=[],
+        synthesis_mode="narrative",
     )
     async def ainvoke(self, worker_input: WorkerInput) -> WorkerResult:
         """
@@ -97,11 +99,13 @@ class ExplainMetadata(BaseWorker):
                 "question": question,
                 "metadata": json.dumps(metadata_results, indent=2),
             })
+            # Extract string content from AIMessage
+            explanation_content = explanation.content if hasattr(explanation, 'content') else str(explanation)
 
             return create_worker_result(
                 sub_goal_id=sub_goal["id"],
                 status="success",
-                outputs={"explanation": explanation},
+                outputs={"explanation": explanation_content},
                 message="Generated metadata explanation",
             )
 

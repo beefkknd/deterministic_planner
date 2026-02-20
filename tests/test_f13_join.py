@@ -172,3 +172,102 @@ class TestJoinReduce:
         assert "Processed 2 results" in result["planner_reasoning"]
         assert "1 succeeded" in result["planner_reasoning"]
         assert "1 failed" in result["planner_reasoning"]
+
+
+class TestBuildKeyArtifacts:
+    """Tests for _build_key_artifacts method."""
+
+    @pytest.fixture
+    def join_reducer(self):
+        return JoinReduce()
+
+    def test_f06_f07_bundle_creates_single_artifact(self, join_reducer):
+        """F06+F07 should be bundled into single key_artifact."""
+        worker_results = [
+            {
+                "sub_goal_id": 1,
+                "status": "success",
+                "outputs": {"es_query": {"match_all": {}}, "intent": "find all shipments"},
+            },
+            {
+                "sub_goal_id": 2,
+                "status": "success",
+                "outputs": {"next_offset": 20, "page_size": 20},
+            },
+        ]
+        sub_goals = [
+            {"id": 1, "worker": "es_query_gen", "params": {}},
+            {"id": 2, "worker": "es_query_exec", "params": {"bundles_with_sub_goal": 1}},
+        ]
+
+        result = join_reducer._build_key_artifacts(worker_results, sub_goals, 1, {})
+
+        # Should have 1 artifact with both es_query and pagination
+        assert len(result) == 1
+        assert result[0]["type"] == "es_query"
+        assert result[0]["slots"]["es_query"] == {"match_all": {}}
+        assert result[0]["slots"]["next_offset"] == 20
+        assert result[0]["slots"]["page_size"] == 20
+
+    def test_f08_continuation_preserves_es_query(self, join_reducer):
+        """F08 should preserve es_query for multi-page continuation."""
+        worker_results = [
+            {
+                "sub_goal_id": 3,
+                "status": "success",
+                "outputs": {
+                    "es_query": {"match_all": {}},
+                    "next_offset": 40,
+                    "page_size": 20,
+                },
+            }
+        ]
+        sub_goals = [
+            {"id": 3, "worker": "page_query", "params": {}},
+        ]
+
+        result = join_reducer._build_key_artifacts(worker_results, sub_goals, 2, {})
+
+        # Should have 1 artifact with es_query preserved
+        assert len(result) == 1
+        assert result[0]["type"] == "es_query"
+        assert result[0]["slots"]["es_query"] == {"match_all": {}}
+        assert result[0]["slots"]["next_offset"] == 40
+
+    def test_f05_standalone_creates_analysis_artifact(self, join_reducer):
+        """F05 standalone should create analysis_result artifact."""
+        worker_results = [
+            {
+                "sub_goal_id": 1,
+                "status": "success",
+                "outputs": {
+                    "analysis_result": {"intent_type": "search", "entity_mappings": {"ship": "shipment"}}
+                },
+            }
+        ]
+        sub_goals = [
+            {"id": 1, "worker": "metadata_lookup", "params": {}},
+        ]
+
+        result = join_reducer._build_key_artifacts(worker_results, sub_goals, 1, {})
+
+        assert len(result) == 1
+        assert result[0]["type"] == "analysis_result"
+        assert result[0]["slots"]["analysis_result"]["intent_type"] == "search"
+
+    def test_skips_failed_workers(self, join_reducer):
+        """Failed workers should not create artifacts."""
+        worker_results = [
+            {
+                "sub_goal_id": 1,
+                "status": "failed",
+                "outputs": {"es_query": {}},
+            }
+        ]
+        sub_goals = [
+            {"id": 1, "worker": "es_query_gen", "params": {}},
+        ]
+
+        result = join_reducer._build_key_artifacts(worker_results, sub_goals, 1, {})
+
+        assert len(result) == 0

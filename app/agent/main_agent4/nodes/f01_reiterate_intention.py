@@ -7,7 +7,7 @@ intent as an executable main goal. NOT a worker — operates on MainState direct
 Uses Pydantic structured output for reliable LLM response parsing.
 """
 
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -36,6 +36,22 @@ class ReiterateResult(BaseModel):
             "including any context resolution from chat history."
         ),
     )
+    user_query_text: str | None = Field(
+        default=None,
+        description=(
+            "Raw ES query text if the user referenced, pasted, or asked about "
+            "a query in their message. None if no query was referenced. "
+            "Include even if the JSON is malformed or incomplete."
+        ),
+    )
+    references_prior_results: bool = Field(
+        default=False,
+        description=(
+            "True if the user is referencing prior results from a previous turn, "
+            "e.g., 'show more', 'next page', 'those results', 'your last query'. "
+            "False for fresh queries."
+        ),
+    )
 
 
 # =============================================================================
@@ -45,8 +61,10 @@ class ReiterateResult(BaseModel):
 REITERATE_SYSTEM_PROMPT = """\
 You are an intent-analysis module for a maritime shipping assistant.
 
-Your ONLY job is to restate the user's message as a clear, actionable goal.
-Do NOT answer the question — only restate it.
+Your job is to:
+1. Restate the user's message as a clear, actionable goal
+2. Detect if they referenced a query (pasted or asked about)
+3. Detect if they referenced prior results from a previous turn
 
 Rules:
 1. Decompose multi-intent queries into numbered goals.
@@ -65,6 +83,14 @@ Rules:
 
 5. If the message is already clear and single-intent, return it as-is
    with minimal rewording.
+
+6. Query Detection: If the user pastes a raw ES query or asks about a query
+   (e.g., "here's my query", "run this", "explain this query"), extract the
+   raw text into user_query_text. Include even if the JSON is malformed.
+
+7. Prior Result Detection: If the user references previous results from this
+   conversation (e.g., "show more", "next page", "those results", "your last
+   query", "keep going"), set references_prior_results to true.
 """
 
 REITERATE_TEMPLATE = """\
@@ -114,10 +140,47 @@ def _convert_history_to_messages(
         ai_content = turn["ai_response"]
         key_artifacts = turn.get("key_artifacts")
         if key_artifacts:
-            ai_content = f"{ai_content}\nKey artifacts: {key_artifacts}"
+            # Include artifact intents so LLM can reason about prior queries
+            artifact_summaries = []
+            for artifact in key_artifacts:
+                artifact_summaries.append(artifact.get("intent", artifact.get("type", "unknown")))
+            ai_content = f"{ai_content}\n[Prior queries: {', '.join(artifact_summaries)}]"
         lines.append(f"AI: {ai_content}")
 
     return "\n".join(lines)
+
+
+def _find_prior_agent_query(
+    history: Optional[list[TurnSummary]],
+) -> dict[str, Any] | None:
+    """
+    Find the most recent es_query key_artifact from conversation history.
+
+    Scans history most-recent-first and returns the first artifact
+    with type == "es_query". Returns None if no match found.
+
+    Args:
+        history: List of prior turn summaries
+
+    Returns:
+        Dict with artifact slots (es_query, next_offset, page_size, etc.)
+        or None if no matching artifact found.
+    """
+    if not history:
+        return None
+
+    # Scan most-recent-first
+    for turn in reversed(history):
+        key_artifacts = turn.get("key_artifacts")
+        if not key_artifacts:
+            continue
+
+        for artifact in key_artifacts:
+            if artifact.get("type") == "es_query":
+                # Return the slots dict
+                return artifact.get("slots")
+
+    return None
 
 
 # =============================================================================
@@ -140,11 +203,15 @@ class ReiterateIntention:
         """
         Restate the user's intent as a clear, actionable goal.
 
+        Detects user-referenced queries and prior result references,
+        writing them to completed_outputs[0] for F02 to use.
+
         Args:
             state: Current MainState
 
         Returns:
-            New MainState with restated question and planner_reasoning
+            New MainState with restated question, planner_reasoning,
+            and completed_outputs[0] populated with context slots.
         """
         question = state.get("question", "")
         logger.info(f"F01: Input question: {question[:100]}...")
@@ -173,11 +240,44 @@ class ReiterateIntention:
             if not main_goal:
                 main_goal = question
 
+            # Build completed_outputs[0] - the synthetic context sub-goal
+            completed_outputs_0: dict[str, Any] = {}
+
+            # 1. User-referenced query - write raw text for F07 validation
+            if result.user_query_text:
+                completed_outputs_0["user_es_query"] = result.user_query_text
+                logger.info(f"F01: Detected user-referenced query")
+
+            # 2. Prior result reference - look up from key_artifacts
+            # Write individual slots so F02 can wire via InputRef
+            if result.references_prior_results:
+                prior_query = _find_prior_agent_query(conversation_history)
+                if prior_query:
+                    # Write individual slots for InputRef wiring
+                    completed_outputs_0["prior_es_query"] = prior_query.get("es_query")
+                    completed_outputs_0["prior_next_offset"] = prior_query.get("next_offset")
+                    completed_outputs_0["prior_page_size"] = prior_query.get("page_size")
+                    logger.info(f"F01: Found prior agent query")
+                else:
+                    logger.info(
+                        "F01: references_prior_results=True but no matching artifact"
+                    )
+                    # Don't write anything - downstream handles gracefully
+
+            # Build updated completed_outputs dict
+            existing_completed = state.get("completed_outputs", {})
+            new_completed = {**existing_completed, 0: completed_outputs_0}
+
             logger.info(f"F01: Restated goal: {main_goal[:100]}...")
+            logger.info(
+                f"F01: completed_outputs[0] slots: {list(completed_outputs_0.keys())}"
+            )
+
             return {
                 **state,
                 "question": main_goal,
                 "planner_reasoning": f"F01: {result.reasoning}",
+                "completed_outputs": new_completed,
             }
 
         except Exception as e:
