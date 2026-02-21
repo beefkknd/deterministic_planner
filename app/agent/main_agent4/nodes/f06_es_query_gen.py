@@ -79,6 +79,12 @@ class ESQueryGen(BaseWorker):
                 question=question,
             )
 
+            # Force execute override: if user explicitly asked to execute without
+            # clarification, override the LLM's needs_clarification decision
+            params = sub_goal.get("params", {})
+            if params.get("force_execute"):
+                query_result = query_result.model_copy(update={"needs_clarification": False})
+
             es_query = query_result.query or {}
             ambiguity = query_result.ambiguity
 

@@ -103,10 +103,8 @@ contains context from F01 (the intent normalizer). Available slots:
    - prior_page_size: page size for pagination
 
    To wire from F01 context, use from_sub_goal: 0 and the slot name. \
-Example: for page_query worker needing continuation, wire:
-   {{"es_query": {{"from_sub_goal": 0, "slot": "prior_es_query"}}, \
-"offset": {{"from_sub_goal": 0, "slot": "prior_next_offset"}}, \
-"limit": {{"from_sub_goal": 0, "slot": "prior_page_size"}}}}
+Example: for page_query worker needing continuation, wire es_query from prior_es_query, \
+offset from prior_next_offset, limit from prior_page_size.
 
 4. ROUND BUDGET: You are on round {round} of {max_rounds}. Plan efficiently.
 
@@ -117,6 +115,12 @@ Example: for page_query worker needing continuation, wire:
    `query_summary` is prose context for understanding; it is NOT a routing signal.
    IMPORTANT: Always dispatch query-generating workers ALONE in their round — F02 needs one round \
 boundary to read needs_clarification before routing to execution or clarification.
+
+   FORCE_EXECUTE OVERRIDE: When force_execute=True appears in F01 context (completed_outputs[0]):
+   - If es_query already exists in completed_outputs (e.g., from user_paste in same turn) → dispatch \
+es_query_exec directly using the cached es_query; skip the query-generating worker entirely
+   - If no es_query yet → dispatch es_query_gen with params["force_execute"]=True; the worker \
+will suppress needs_clarification internally and proceed to execute
 
 6. PARTIAL SUCCESS: If some deliverables succeeded and others failed after \
 retries, you may declare "done" with partial results.
@@ -216,6 +220,8 @@ def _format_f01_context(state: MainState) -> str:
         flags.append("has_prior_es_query")
     if "user_es_query" in f01_context:
         flags.append("has_user_es_query")
+    if "force_execute" in f01_context:
+        flags.append("force_execute")
 
     if flags:
         return f"Context from F01: {', '.join(flags)}"

@@ -4,10 +4,13 @@ Tests helper functions that don't require LLM.
 """
 
 import pytest
+from unittest.mock import AsyncMock, patch
+
 from app.agent.main_agent4.nodes.f01_reiterate_intention import (
     _convert_history_to_messages,
     _find_prior_agent_query,
     ReiterateResult,
+    ReiterateIntention,
 )
 
 
@@ -148,6 +151,36 @@ class TestReiterateResult:
 
         assert result.references_prior_results is True
 
+    def test_force_execute_default_false(self):
+        """force_execute defaults to False."""
+        result = ReiterateResult(
+            main_goal="Find shipments",
+            reasoning="User wants to find",
+        )
+
+        assert result.force_execute is False
+
+    def test_can_set_force_execute_true(self):
+        """Can set force_execute to True."""
+        result = ReiterateResult(
+            main_goal="Just run it",
+            reasoning="User wants to execute without clarification",
+            force_execute=True,
+        )
+
+        assert result.force_execute is True
+
+    def test_force_execute_can_be_set_with_goal(self):
+        """force_execute=True can be set alongside main_goal."""
+        result = ReiterateResult(
+            main_goal="Run this query and don't ask",
+            reasoning="User explicitly said to proceed without asking",
+            force_execute=True,
+        )
+
+        assert result.force_execute is True
+        assert result.main_goal == "Run this query and don't ask"
+
 
 class TestFindPriorAgentQuery:
     """Tests for _find_prior_agent_query helper."""
@@ -245,3 +278,122 @@ class TestFindPriorAgentQuery:
         ]
         result = _find_prior_agent_query(history)
         assert result == {"es_query": "found"}
+
+
+class TestReiterateIntentionAinvoke:
+    """Tests for F01 ainvoke behavior including force_execute."""
+
+    @pytest.fixture
+    def reiterate_intention(self):
+        """Create ReiterateIntention instance."""
+        return ReiterateIntention()
+
+    @pytest.mark.asyncio
+    async def test_force_execute_writes_to_completed_outputs(self, reiterate_intention):
+        """When force_execute=True, it should be written to completed_outputs[0]."""
+        mock_result = ReiterateResult(
+            main_goal="Just run it",
+            reasoning="User wants to execute without asking",
+            force_execute=True,
+        )
+
+        with patch.object(reiterate_intention, "_chain", new_callable=AsyncMock) as mock_chain:
+            mock_chain.ainvoke = AsyncMock(return_value=mock_result)
+
+            state = {
+                "question": "Just run it",
+                "conversation_history": None,
+                "completed_outputs": {},
+            }
+
+            result = await reiterate_intention.ainvoke(state)
+
+        # force_execute should be written to completed_outputs[0]
+        assert "force_execute" in result["completed_outputs"][0]
+        assert result["completed_outputs"][0]["force_execute"] is True
+
+    @pytest.mark.asyncio
+    async def test_normal_query_no_force_execute_in_outputs(self, reiterate_intention):
+        """When force_execute=False (default), it should NOT be written to completed_outputs[0]."""
+        mock_result = ReiterateResult(
+            main_goal="Find Maersk shipments",
+            reasoning="User wants to find shipments",
+            force_execute=False,
+        )
+
+        with patch.object(reiterate_intention, "_chain", new_callable=AsyncMock) as mock_chain:
+            mock_chain.ainvoke = AsyncMock(return_value=mock_result)
+
+            state = {
+                "question": "Find Maersk shipments",
+                "conversation_history": None,
+                "completed_outputs": {},
+            }
+
+            result = await reiterate_intention.ainvoke(state)
+
+        # force_execute should NOT be in completed_outputs[0] when False
+        assert "force_execute" not in result["completed_outputs"][0]
+
+    @pytest.mark.asyncio
+    async def test_force_execute_with_user_query_text(self, reiterate_intention):
+        """force_execute can coexist with user_query_text."""
+        mock_result = ReiterateResult(
+            main_goal="Run this query",
+            reasoning="User provided query and wants to execute",
+            user_query_text='{"query": {"match_all": {}}}',
+            force_execute=True,
+        )
+
+        with patch.object(reiterate_intention, "_chain", new_callable=AsyncMock) as mock_chain:
+            mock_chain.ainvoke = AsyncMock(return_value=mock_result)
+
+            state = {
+                "question": "Run this query",
+                "conversation_history": None,
+                "completed_outputs": {},
+            }
+
+            result = await reiterate_intention.ainvoke(state)
+
+        # Both should be present
+        assert result["completed_outputs"][0]["user_es_query"] == '{"query": {"match_all": {}}}'
+        assert result["completed_outputs"][0]["force_execute"] is True
+
+    @pytest.mark.asyncio
+    async def test_force_execute_with_prior_results(self, reiterate_intention):
+        """force_execute can coexist with references_prior_results."""
+        mock_result = ReiterateResult(
+            main_goal="Show more",
+            reasoning="User wants pagination with force execute",
+            references_prior_results=True,
+            force_execute=True,
+        )
+
+        history_with_prior = [
+            {
+                "turn_id": 1,
+                "human_message": "find Maersk shipments",
+                "ai_response": "Here are results",
+                "key_artifacts": [
+                    {"type": "es_query", "slots": {"es_query": {"match_all": {}}, "next_offset": 20, "page_size": 10}}
+                ],
+            }
+        ]
+
+        with patch.object(reiterate_intention, "_chain", new_callable=AsyncMock) as mock_chain:
+            mock_chain.ainvoke = AsyncMock(return_value=mock_result)
+
+            state = {
+                "question": "Show more",
+                "conversation_history": history_with_prior,
+                "completed_outputs": {},
+            }
+
+            result = await reiterate_intention.ainvoke(state)
+
+        # Both should be present
+        assert result["completed_outputs"][0]["prior_es_query"] == {"match_all": {}}
+        assert result["completed_outputs"][0]["prior_next_offset"] == 20
+        assert result["completed_outputs"][0]["prior_page_size"] == 10
+        assert result["completed_outputs"][0]["force_execute"] is True

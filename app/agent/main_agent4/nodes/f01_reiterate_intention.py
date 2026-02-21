@@ -52,6 +52,14 @@ class ReiterateResult(BaseModel):
             "False for fresh queries."
         ),
     )
+    force_execute: bool = Field(
+        default=False,
+        description=(
+            "True if the user explicitly signals they want the query executed "
+            "without clarification — e.g. 'just run it', 'use best guess', "
+            "'don't ask', 'execute anyway'."
+        ),
+    )
 
 
 # =============================================================================
@@ -91,6 +99,11 @@ Rules:
 7. Prior Result Detection: If the user references previous results from this
    conversation (e.g., "show more", "next page", "those results", "your last
    query", "keep going"), set references_prior_results to true.
+
+8. Force Execute Detection: If the user explicitly signals they want the
+   system to proceed without asking for clarification ("just run it",
+   "don't ask", "use best guess", "execute anyway", "skip clarification"),
+   set force_execute to true.
 """
 
 REITERATE_TEMPLATE = """\
@@ -263,6 +276,10 @@ class ReiterateIntention:
                         "F01: references_prior_results=True but no matching artifact"
                     )
                     # Don't write anything - downstream handles gracefully
+
+            # 3. Force execute flag - user explicitly wants to skip clarification
+            if result.force_execute:
+                completed_outputs_0["force_execute"] = True
 
             # Build updated completed_outputs dict
             existing_completed = state.get("completed_outputs", {})

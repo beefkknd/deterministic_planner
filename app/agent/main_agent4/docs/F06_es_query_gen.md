@@ -24,6 +24,14 @@
 | `metadata_results` | InputRef from F05 slot `metadata_results` | Field metadata from ES mappings |
 | `description` | sub_goal field | Work instruction from F02 (used as `question`) |
 
+## Params
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `force_execute` | `bool` | When `True`, overrides the LLM's `needs_clarification` decision to `False`, allowing the query to proceed directly to execution without user clarification. Used when the user explicitly says "just run it", "don't ask", or similar. |
+
+**Effect**: When `force_execute=True` is passed via `sub_goal["params"]`, F06 will force `needs_clarification=False` regardless of what the LLM decided. This bypasses the clarification routing in F02 and allows execution to proceed.
+
 ## Output
 
 | Slot | Type | Description |
@@ -117,6 +125,23 @@ Output:
 }
 # F02 sees needs_clarification=True → dispatches F09 (clarify_question)
 # F09 receives ambiguity dict to build the clarification message
+```
+
+### Force Execute Override
+```python
+# Input: F06 receives params={"force_execute": True}
+# LLM returns needs_clarification=True (would normally route to F09)
+
+Output:
+{
+    "es_query": {"query": {"term": {"arrival_date": "2024-01-15"}}},
+    "intent": "arrival yesterday",
+    "query_summary": "Used arrival_date as best guess. Uncertain which date field.",
+    "needs_clarification": False,  # Overridden by force_execute!
+    "ambiguity": {...},
+}
+# force_execute=True overrides needs_clarification to False
+# F02 sees needs_clarification=False → dispatches F07 (es_query_exec)
 ```
 
 ## Precondition Gate Effect on Downstream Workers
