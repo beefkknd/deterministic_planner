@@ -33,11 +33,12 @@ class ESQueryGen(BaseWorker):
         preconditions=[
             "has metadata_results from metadata_lookup",
             "has analysis_result with intent_type",
+            "needs_clarification=False from metadata_lookup",
         ],
-        outputs=["es_query", "intent", "ambiguity"],
+        outputs=["es_query", "intent", "query_summary", "ambiguity", "needs_clarification"],
         goal_type="support",
         name="es_query_gen",
-        description="Generates search or aggregation ES query based on analysis_result.intent_type; reports field ambiguity if uncertain",
+        description="Generates search or aggregation ES query based on analysis_result.intent_type; signals needs_clarification if query cannot reliably cover user intent",
         memorable_slots=["es_query"],
         synthesis_mode="hidden",
     )
@@ -94,7 +95,10 @@ class ESQueryGen(BaseWorker):
             outputs: dict[str, Any] = {
                 "es_query": es_query,
                 "intent": intent_description,
+                "needs_clarification": query_result.needs_clarification,
             }
+            if query_result.query_summary:
+                outputs["query_summary"] = query_result.query_summary
             if ambiguity:
                 outputs["ambiguity"] = ambiguity
 

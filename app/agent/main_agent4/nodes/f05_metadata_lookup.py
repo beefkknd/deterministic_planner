@@ -88,7 +88,7 @@ class MetadataLookup(BaseWorker):
 
     @worker_tool(
         preconditions=["has entity or reference to look up"],
-        outputs=["metadata_results", "value_results", "analysis_result"],
+        outputs=["metadata_results", "value_results", "analysis_result", "needs_clarification"],
         goal_type="support",
         name="metadata_lookup",
         description="Resolves entity names via LLM, then looks up field metadata and reference values from ES mappings",
@@ -156,6 +156,18 @@ class MetadataLookup(BaseWorker):
                 "value_results": value_results,
                 "analysis_result": analysis_result,
             }
+
+            # Determine if clarification is needed
+            # Multi-match: when value_results has multiple values for any field
+            has_multi_match = any(len(v) > 1 for v in value_results.values()) if value_results else False
+            # Low confidence: less than 70% confidence in any single resolution
+            has_low_confidence = extracted_entities and any(
+                e.get("confidence", 1.0) < 0.7 for e in extracted_entities
+            )
+
+            outputs["needs_clarification"] = (
+                len(unresolved_entities) > 0 or has_multi_match or has_low_confidence
+            )
 
             # Attach unresolved entities if any
             if unresolved_entities:

@@ -157,9 +157,30 @@ class ESQueryResult(BaseModel):
     query_type: Literal["search", "aggregation"] = Field(
         description="Type of query generated",
     )
+    query_summary: str | None = Field(
+        default=None,
+        description=(
+            "Natural language summary of what was generated and any concerns. "
+            "Use this to flag when the available metadata may not fully cover the user's intent, "
+            "e.g. 'Generated a term query on shipper_name, but the user mentioned owner which "
+            "has no direct field match in the metadata.'"
+        ),
+    )
     ambiguity: dict[str, Any] | None = Field(
         default=None,
-        description="Ambiguity info if field/value is uncertain",
+        description=(
+            "Structured ambiguity if field/value is uncertain. "
+            "Include: field (ambiguous field name), message (reason), "
+            "alternatives (list of candidate fields), confidence (0.0-1.0)."
+        ),
+    )
+    needs_clarification: bool = Field(
+        default=False,
+        description=(
+            "True if the generated query cannot reliably cover the user's intent. "
+            "Set True when field uncertainty is high or no matching field exists. "
+            "The threshold decision belongs here — not in the planner."
+        ),
     )
 
 
@@ -181,6 +202,22 @@ Rules:
 - Use "match" for text search fields
 - For aggregations, include a meaningful aggregation name
 - Always include a size parameter for search queries
+
+query_summary: Always fill this field with a brief natural-language explanation of what \
+query you generated and whether the available metadata covers the user's intent. \
+Example: "Generated a bool query filtering on shipper_name=MAERSK. Metadata covered \
+shipper_name directly." OR "Generated a term query on arrival_date. The user mentioned \
+'owner' but no owner field exists in the metadata — closest match is consignee_name."
+
+ambiguity: Fill only when you are uncertain which field or value to use. Include: \
+field (ambiguous field name), message (reason for uncertainty), \
+alternatives (list of candidate fields/values), confidence (float 0.0-1.0 for your \
+best guess). Leave null if no uncertainty.
+
+needs_clarification: Set to True when the generated query cannot reliably cover the user's \
+intent. Examples: no matching field exists for user's term, field uncertainty is too high, \
+entity was resolved but no corresponding ES field exists. Set to False when you are confident \
+the query matches the user's intent.
 
 Respond with JSON matching the ESQueryResult schema."""
 

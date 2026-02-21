@@ -110,9 +110,13 @@ Example: for page_query worker needing continuation, wire:
 
 4. ROUND BUDGET: You are on round {round} of {max_rounds}. Plan efficiently.
 
-5. AMBIGUITY: If a worker reports ambiguity, decide:
-   - Low confidence (< 0.6): dispatch clarify_question
-   - High confidence (>= 0.6): proceed with best guess
+5. CLARIFICATION ROUTING: Workers that generate queries output a `needs_clarification` boolean flag:
+   - needs_clarification=False → dispatch the query execution worker; set params["bundles_with_sub_goal"]
+   - needs_clarification=True → dispatch the clarification worker; do NOT dispatch query execution
+   The threshold decision lives inside the query-generating worker — F02 only reads the boolean.
+   `query_summary` is prose context for understanding; it is NOT a routing signal.
+   IMPORTANT: Always dispatch query-generating workers ALONE in their round — F02 needs one round \
+boundary to read needs_clarification before routing to execution or clarification.
 
 6. PARTIAL SUCCESS: If some deliverables succeeded and others failed after \
 retries, you may declare "done" with partial results.
@@ -140,9 +144,10 @@ pending sub-goals.
 11. EXPLICIT SIZE: When user specifies a result count (e.g., "50 results"), \
 put size: N in the sub-goal's params, not in the query itself.
 
-12. QUERY BUNDLING: When creating an es_query_exec sub-goal that depends on \
-es_query_gen, set params["bundles_with_sub_goal"] = <es_query_gen_sub_goal_id> \
-so F13 knows to merge their key_artifacts into one entry.
+12. QUERY BUNDLING: When dispatching query execution after a query-generating worker has completed \
+(in a later round), always set params["bundles_with_sub_goal"] = <query-generating_worker's_sub_goal_id> \
+so F13 merges their key_artifacts into one entry. F13 handles cross-round bundling \
+via completed_outputs lookup — no need to be in the same round.
 """
 
 PLANNER_TEMPLATE = """\
